@@ -24,6 +24,18 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ HEARTBEAT_TIMEOUT_MS: value })).toThrow(/HEARTBEAT_TIMEOUT_MS/);
   });
 
+  it("uses in-memory storage when DATA_FILE is unset", () => {
+    expect(loadConfig({}).dataFile).toBeUndefined();
+  });
+
+  it("reads DATA_FILE", () => {
+    expect(loadConfig({ DATA_FILE: "./data/fleet.json" }).dataFile).toBe("./data/fleet.json");
+  });
+
+  it("rejects a blank DATA_FILE rather than guessing what was meant", () => {
+    expect(() => loadConfig({ DATA_FILE: "  " })).toThrow(/DATA_FILE/);
+  });
+
   it("rejects an unknown LOG_LEVEL", () => {
     expect(() => loadConfig({ LOG_LEVEL: "verbose" })).toThrow(/LOG_LEVEL/);
   });

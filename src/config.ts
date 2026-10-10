@@ -6,6 +6,7 @@ const envSchema = z.object({
   HEARTBEAT_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   CLOCK_SKEW_WARN_MS: z.coerce.number().int().positive().default(60_000),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info"),
+  DATA_FILE: z.string().trim().min(1, "must not be empty").optional(),
 });
 
 export interface Config {
@@ -13,6 +14,8 @@ export interface Config {
   heartbeatTimeoutMs: number;
   clockSkewWarnMs: number;
   logLevel: string;
+  /** Unset means in-memory storage only. */
+  dataFile: string | undefined;
 }
 
 /**
@@ -32,5 +35,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     heartbeatTimeoutMs: parsed.HEARTBEAT_TIMEOUT_MS,
     clockSkewWarnMs: parsed.CLOCK_SKEW_WARN_MS,
     logLevel: parsed.LOG_LEVEL,
+    dataFile: parsed.DATA_FILE,
   };
 }
