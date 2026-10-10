@@ -6,84 +6,138 @@
 <title>Device Fleet Monitor</title>
 <style>
   :root {
-    --bg: #f6f7f9; --panel: #ffffff; --text: #1c2430; --muted: #66707d; --border: #dde1e6;
-    --online: #1a7f37; --online-bg: #dafbe1; --offline: #b42318; --offline-bg: #fee4e2;
-    --warn: #9a6700; --warn-bg: #fff3c4; --accent: #2557d6;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #0f1419; --panel: #172029; --text: #e6edf3; --muted: #8b96a3; --border: #2a3541;
-      --online: #4ac26b; --online-bg: #12301c; --offline: #ff7b72; --offline-bg: #3a1716;
-      --warn: #e3b341; --warn-bg: #3a2e0f; --accent: #6e9bff;
-    }
+    color-scheme: light;
+    --paper: #FAFAF7;
+    --ink: #1F2420;
+    --soft: #6B736C;
+    --rule: #E6E8E3;
+    --hover: #F3F4EF;
+    --green: #2F6B3A;
+    --clay: #B5523B;
+    --sans: -apple-system, "Segoe UI", Inter, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
-         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 1100px; margin: 0 auto; }
-  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
-  h1 { font-size: 20px; margin: 0; }
-  .muted { color: var(--muted); }
-  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
-  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-  .card .value { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .card.online .value { color: var(--online); }
-  .card.offline .value { color: var(--offline); }
-  .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-  .filters button { border: 1px solid var(--border); background: var(--panel); color: var(--text);
-                    padding: 6px 12px; cursor: pointer; font: inherit; }
-  .filters button:first-child { border-radius: 6px 0 0 6px; }
-  .filters button:last-child { border-radius: 0 6px 6px 0; }
-  .filters button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
-  form { display: flex; flex-wrap: wrap; gap: 8px; }
-  input { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; }
-  form button { padding: 6px 14px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
-  .message { min-height: 20px; margin: 0 0 8px; }
-  .message.error { color: var(--offline); }
-  .message.ok { color: var(--online); }
-  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  body {
+    margin: 0;
+    padding: 56px 20px 64px;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15px/1.5 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 960px; }
+  @media (min-width: 1040px) { main { margin-left: 64px; } }
+
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 13px; }
+  .soft { color: var(--soft); }
+
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+  h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+  #updated { font-size: 12px; }
+
+  .summary { margin: 28px 0 40px; font-size: 15px; color: var(--soft); }
+  .summary strong { font-weight: 600; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+  .summary .online strong { color: var(--green); }
+  .summary .offline strong { color: var(--clay); }
+  .summary .sep { margin: 0 8px; }
+
+  .controls {
+    display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
+    gap: 20px 32px; margin-bottom: 8px;
+  }
+  .filters { display: flex; gap: 24px; }
+  .filters button {
+    padding: 4px 0 6px; border: 0; border-bottom: 2px solid transparent; background: none;
+    color: var(--soft); font: inherit; font-size: 14px; cursor: pointer;
+  }
+  .filters button:hover { color: var(--ink); }
+  .filters button[aria-pressed="true"] { color: var(--green); border-bottom-color: var(--green); }
+
+  form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; }
+  input {
+    width: 150px; padding: 6px 0; border: 0; border-bottom: 1px solid var(--rule); border-radius: 0;
+    background: transparent; color: var(--ink); font: inherit; font-size: 14px;
+  }
+  input[name="id"] { font-family: var(--mono); font-size: 13px; }
+  input::placeholder { color: var(--soft); opacity: 0.7; }
+  input:focus { outline: none; border-bottom-color: var(--green); }
+  form button {
+    padding: 6px 14px; border: 0; border-radius: 4px; background: var(--green); color: var(--paper);
+    font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+  }
+  form button:hover { background: #275A31; }
+
+  :focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 2px; }
+  input:focus-visible { outline: none; border-bottom: 2px solid var(--green); padding-bottom: 5px; }
+
+  .message { min-height: 22px; margin: 8px 0 24px; font-size: 13px; }
+  .message.ok { color: var(--green); }
+  .message.error { color: var(--clay); }
+
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
-  th { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
-  tr:last-child td { border-bottom: 0; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-  .badge.ONLINE, .badge.OK { color: var(--online); background: var(--online-bg); }
-  .badge.OFFLINE, .badge.ERROR { color: var(--offline); background: var(--offline-bg); }
-  .badge.WARN { color: var(--warn); background: var(--warn-bg); }
-  .empty { padding: 32px; text-align: center; color: var(--muted); }
-  footer { margin-top: 12px; font-size: 12px; }
+  th, td { padding: 12px 20px 12px 0; text-align: left; white-space: nowrap; }
+  th:last-child, td:last-child { padding-right: 0; }
+  th {
+    padding-bottom: 10px; border-bottom: 1px solid var(--rule);
+    font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--soft);
+  }
+  td { border-bottom: 1px solid var(--rule); }
+  th.num, td.num { text-align: right; }
+  tbody tr:hover td { background: var(--hover); }
+  tbody tr.empty-row:hover td { background: none; }
+
+  .status { display: inline-flex; align-items: center; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .status.online { color: var(--green); }
+  .status.online .dot { background: var(--green); }
+  .status.offline { color: var(--clay); }
+  .status.offline .dot { background: var(--clay); }
+  .reported-error { color: var(--clay); }
+
+  td.empty { padding: 32px 0; border-bottom: 0; color: var(--soft); white-space: normal; }
+
+  footer { margin-top: 28px; font-size: 12px; color: var(--soft); }
+
+  @media (max-width: 640px) {
+    body { padding: 32px 16px 48px; }
+    .summary { margin: 20px 0 28px; }
+    .controls { flex-direction: column; align-items: stretch; }
+    input { flex: 1 1 120px; width: auto; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .filters button, input, form button, tbody td { transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease; }
+  }
 </style>
 </head>
 <body>
 <main>
   <header>
     <h1>Device Fleet Monitor</h1>
-    <span class="muted" id="updated">Connecting…</span>
+    <span class="soft" id="updated">Connecting…</span>
   </header>
 
-  <section class="cards" aria-label="Fleet summary">
-    <div class="card"><div class="label">Total</div><div class="value" id="total">–</div></div>
-    <div class="card online"><div class="label">Online</div><div class="value" id="online">–</div></div>
-    <div class="card offline"><div class="label">Offline</div><div class="value" id="offline">–</div></div>
-  </section>
+  <p class="summary" aria-label="Fleet summary" aria-live="polite">
+    <span><strong id="total">—</strong> <span id="total-label">devices</span></span><span class="sep" aria-hidden="true">·</span><span class="online"><strong id="online">—</strong> online</span><span class="sep" aria-hidden="true">·</span><span class="offline"><strong id="offline">—</strong> offline</span>
+  </p>
 
-  <div class="toolbar">
+  <div class="controls">
     <div class="filters" role="group" aria-label="Filter by status">
       <button type="button" data-filter="" aria-pressed="true">All</button>
       <button type="button" data-filter="ONLINE" aria-pressed="false">Online</button>
       <button type="button" data-filter="OFFLINE" aria-pressed="false">Offline</button>
     </div>
     <form id="register">
-      <input name="id" placeholder="device-06" required pattern="[A-Za-z0-9._\-]{1,64}" aria-label="Device id">
-      <input name="name" placeholder="Name" required aria-label="Device name">
+      <input name="id" placeholder="device-06" required pattern="[A-Za-z0-9._\-]{1,64}" aria-label="Device id" autocomplete="off">
+      <input name="name" placeholder="Name" required aria-label="Device name" autocomplete="off">
       <button type="submit">Register</button>
     </form>
   </div>
   <p class="message" id="message" role="status"></p>
 
-  <div class="table-wrap">
+  <div class="table-scroll">
     <table>
       <thead>
         <tr>
@@ -95,28 +149,32 @@
       <tbody id="devices"></tbody>
     </table>
   </div>
-  <footer class="muted">Status is derived by the server on every read. This page refreshes every 2 seconds.</footer>
+  <footer>Status is derived by the server on every read. This page refreshes every 2 seconds.</footer>
 </main>
 
 <script>
   const POLL_MS = 2000;
+  const MISSING = "—";
   let filter = "";
 
   const $ = (id) => document.getElementById(id);
 
-  function cell(content, className) {
+  function cell(content, className, title) {
     const td = document.createElement("td");
     if (className) td.className = className;
+    if (title) td.title = title;
     if (content instanceof Node) td.append(content);
-    else td.textContent = content ?? "–";
+    else td.textContent = content ?? MISSING;
     return td;
   }
 
-  function badge(text) {
-    if (!text) return "–";
+  function statusMark(status) {
     const span = document.createElement("span");
-    span.className = "badge " + text;
-    span.textContent = text;
+    span.className = "status " + status.toLowerCase();
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.setAttribute("aria-hidden", "true");
+    span.append(dot, status.toLowerCase());
     return span;
   }
 
@@ -129,7 +187,7 @@
   }
 
   function time(iso) {
-    return iso ? new Date(iso).toLocaleTimeString() : "–";
+    return iso ? new Date(iso).toLocaleTimeString() : MISSING;
   }
 
   async function getJson(path) {
@@ -145,6 +203,7 @@
       const td = cell(filter ? "No " + filter.toLowerCase() + " devices." : "No devices registered yet. Start the simulator or register one above.", "empty");
       td.colSpan = 9;
       const tr = document.createElement("tr");
+      tr.className = "empty-row";
       tr.append(td);
       body.append(tr);
       return;
@@ -153,15 +212,15 @@
       const m = d.metrics || {};
       const tr = document.createElement("tr");
       tr.append(
-        cell(d.id),
+        cell(d.id, "mono"),
         cell(d.name),
-        cell(badge(d.status)),
-        cell(ago(d.last_heartbeat)),
-        cell(time(d.last_reported_timestamp)),
-        cell(badge(m.status)),
-        cell(m.cpu_usage, "num"),
-        cell(m.signal_strength, "num"),
-        cell(time(d.registered_at)),
+        cell(statusMark(d.status)),
+        cell(ago(d.last_heartbeat), "mono", d.last_heartbeat),
+        cell(time(d.last_reported_timestamp), "mono soft", d.last_reported_timestamp),
+        cell(m.status ? m.status.toLowerCase() : MISSING, m.status === "ERROR" ? "reported-error" : "soft"),
+        cell(m.cpu_usage, "mono num"),
+        cell(m.signal_strength, "mono num"),
+        cell(time(d.registered_at), "mono soft", d.registered_at),
       );
       body.append(tr);
     }
@@ -175,6 +234,7 @@
         list.map((d) => getJson("/devices/" + encodeURIComponent(d.id)).catch(() => d)),
       );
       $("total").textContent = summary.total;
+      $("total-label").textContent = summary.total === 1 ? "device" : "devices";
       $("online").textContent = summary.online;
       $("offline").textContent = summary.offline;
       renderRows(details);
@@ -213,7 +273,7 @@
         showMessage(data.error ? data.error.message : "HTTP " + res.status, "error");
         return;
       }
-      showMessage("Registered " + data.id + ". It stays OFFLINE until its first heartbeat.", "ok");
+      showMessage("Registered " + data.id + ". It stays offline until its first heartbeat.", "ok");
       form.reset();
       refresh();
     } catch (error) {
