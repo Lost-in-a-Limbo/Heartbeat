@@ -165,10 +165,28 @@ device-fleet-monitor/
 
 ## 3. Prerequisites
 
-- **Node.js 20.12 or later** (`node --version`); developed on Node 22
+- **Node.js 20.12 or later** (`node --version`); developed on Node 22. `.nvmrc` pins 22 for nvm / fnm / Volta users (`nvm use`)
 - **npm 10 or later**
-- Optional: **Docker** 24+ if you prefer to run it containerised
+- Optional: **Docker** 24+ (Docker Desktop on Windows and macOS) if you prefer to run it containerised
 - No database, no external services, nothing to provision
+
+### Platform notes
+
+This project was **developed and tested on Linux** (Zorin OS 18.1, x86_64, Node 22.14.0, npm 10.9.2, Docker 29.1.3). It has not been run on Windows or macOS, but it is built to be portable:
+
+- **Docker image: verified on both `linux/amd64` and `linux/arm64`.** The arm64 image (what Docker builds on an Apple Silicon Mac) was built and run under QEMU emulation, and passed the same checks as amd64: build, endpoints, simulator and the offline transition, fail-fast config, persistence across containers, and a clean `docker stop`. Windows and Intel Macs run the amd64 image.
+
+- **Dependencies:** `package-lock.json` already contains the Windows, macOS and Linux builds (x64 and arm64) of every package that ships a native binary, and `npm ci` installs the right one for the machine. No per-OS dependency file is needed. The packages the server runs on (express, zod, pino) are plain JavaScript.
+- **npm scripts** (`install`, `test`, `build`, `dev`, `start`, `simulate`) work unchanged on all three systems.
+- **Line endings:** `.gitattributes` keeps files LF on every OS, so a Windows checkout matches the Linux one.
+- **Shell examples in this README use bash syntax.** macOS Terminal (zsh) runs them as written. On **Windows**, run them in **Git Bash** or **WSL**; in PowerShell and `cmd` two things differ:
+
+| Task | bash / zsh (Linux, macOS, Git Bash) | PowerShell | cmd |
+| --- | --- | --- | --- |
+| Set a variable (PowerShell and cmd keep it for the rest of the session) | `HEARTBEAT_TIMEOUT_MS=5000 npm run dev` | `$env:HEARTBEAT_TIMEOUT_MS=5000; npm run dev` | `set HEARTBEAT_TIMEOUT_MS=5000&& npm run dev` |
+| Call the API | `curl ...` | `curl.exe ...` (plain `curl` may be an alias for `Invoke-WebRequest`), and JSON quoting differs | `curl ...`, JSON in double quotes with inner quotes escaped |
+
+The simplest way to configure on any OS, with no shell syntax at all, is a `.env` file: copy `.env.example` to `.env` and edit it. The dashboard at `http://localhost:3000/` needs nothing but a browser.
 
 ---
 

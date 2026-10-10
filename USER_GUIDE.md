@@ -6,7 +6,7 @@ This guide shows how to use the Device Fleet Monitor from the browser, and where
 
 ## 1. Start it (2 minutes)
 
-You need Node.js 20.12 or later. From the repository root:
+You need Node.js 20.12 or later. The project was built and tested on Linux and is designed to run on macOS and Windows too (on Windows, use Git Bash or WSL for the terminal commands below, or see [README §3, Platform notes](README.md#platform-notes)). From the repository root:
 
 ```bash
 npm install
