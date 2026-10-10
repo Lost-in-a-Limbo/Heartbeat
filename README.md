@@ -35,6 +35,7 @@ A device record stores only facts:
 
 ```ts
 { id, name, registeredAt, lastHeartbeatAt, lastReportedTimestamp, lastMetrics }
+// lastMetrics = { status?, cpuUsage?, signalStrength?, reportedAt }
 ```
 
 `ONLINE` / `OFFLINE` is **computed at read time** from `now - lastHeartbeatAt`:
@@ -65,6 +66,8 @@ interface Clock { now(): number }   // SystemClock in prod, FakeClock in tests
 
 This is why the 30-second timeout tests run in **milliseconds instead of 30+ seconds** and are not flaky: the test advances a fake clock rather than sleeping. It also means the timeout boundary can be tested at exact millisecond precision, which a sleep-based test cannot do reliably.
 
+`SystemClock` reads the wall clock **once at startup** and measures everything after that with the monotonic clock (`performance.now()`). If NTP steps the wall clock backwards while the server runs, a plain `Date.now()` would make a fresh heartbeat look older than an earlier one and could flip a live device to `OFFLINE`. The monotonic clock cannot go backwards. The trade-off is that over a very long uptime the server's timestamps can drift slightly from true wall time; for a 30-second liveness window that is irrelevant.
+
 ### 2.4 Which timestamp defines liveness
 
 The heartbeat body carries a device-reported `timestamp`, but device clocks drift and cannot be trusted for a liveness decision. So:
@@ -75,11 +78,26 @@ The heartbeat body carries a device-reported `timestamp`, but device clocks drif
 
 ### 2.5 Out-of-order and duplicate heartbeats
 
-`lastHeartbeatAt` only ever moves forward (`max(existing, incoming)`). A delayed heartbeat arriving after a newer one cannot drag a device's liveness backwards.
+`lastHeartbeatAt` only ever moves forward (`max(existing, incoming)`). A delayed heartbeat arriving after a newer one cannot drag a device's liveness backwards. `lastReportedTimestamp` likewise keeps the newest time the device has claimed.
+
+**Metrics** (`status`, `cpu_usage`, `signal_strength`) have their own ordering rule, because a delayed packet should still count for liveness (the device *was* alive) but must not overwrite a newer reading with an older one:
+
+| Incoming heartbeat | Stored metrics |
+| --- | --- |
+| Carries no metric fields | Kept — it is a liveness ping |
+| Device `timestamp` older than the stored reading's | Kept — the reading is stale |
+| Device `timestamp` equal to or newer than the stored reading's | Replaced |
+| No device `timestamp` | Replaced — it was received just now, so it is the newest reading we have |
+
+A heartbeat that is accepted replaces the whole metrics snapshot: fields it does not carry become `null`, so one record never mixes readings taken at different times. Each stored reading keeps its own device timestamp (`lastMetrics.reportedAt`) for this comparison, separate from `lastReportedTimestamp`; otherwise a metric-less ping with a newer timestamp would block a delayed heartbeat whose readings are still newer than the stored ones.
+
+Using the device clock here is deliberate and narrow: it only orders readings *from the same device*, where drift largely cancels out. It is never used for liveness.
 
 ### 2.6 Concurrency
 
-Node's event loop runs each request handler to completion without preemption, and all repository mutations are synchronous, so there are no torn reads or lost updates within a single process. A concurrency test fires 50 simultaneous heartbeats and asserts a consistent final state. The real limitation is horizontal: two processes would each hold their own map. See Known Limitations.
+Node's event loop runs each request handler to completion without preemption, and all repository mutations are synchronous, so there are no torn reads or lost updates within a single process. Updates go through `repo.update(id, change)`, a single read-modify-write call, so a storage backend can make the same step atomic. The concurrency tests fire 50 simultaneous heartbeats and 10 simultaneous registrations of one id (exactly one `201`, nine `409`). The real limitation is horizontal: two processes would each hold their own map. See Known Limitations.
+
+The repository interface is synchronous on purpose. An async interface would only pay off for a database this exercise does not need, and would spread `await` through every layer for an in-memory map. The cost is noted in §11.
 
 ### 2.7 Project layout
 
@@ -88,18 +106,19 @@ device-fleet-monitor/
 ├── README.md
 ├── CLAUDE.md                     # working notes / conventions for AI-assisted edits
 ├── package.json
-├── tsconfig.json
+├── tsconfig.json                 # typechecks src, tests and simulator
+├── tsconfig.build.json           # emits only src/ to dist/
 ├── vitest.config.ts
 ├── .env.example
 ├── .gitignore
 ├── Dockerfile
-├── docker-compose.yml
+├── .dockerignore
 ├── src/
 │   ├── index.ts                  # entrypoint: config -> wiring -> listen -> graceful shutdown
 │   ├── app.ts                    # buildApp({ clock, repo, config }) -> Express app (no listen)
 │   ├── config.ts                 # env parsing + defaults
 │   ├── domain/
-│   │   ├── device.ts             # Device type, deriveStatus, toDeviceView
+│   │   ├── device.ts             # Device type, deriveStatus, applyHeartbeat, toDeviceView
 │   │   └── errors.ts             # DeviceNotFoundError, DuplicateDeviceError, ValidationError
 │   ├── repository/
 │   │   ├── device-repository.ts  # interface
@@ -114,14 +133,18 @@ device-fleet-monitor/
 │   │   ├── clock.ts              # Clock, SystemClock, FakeClock
 │   │   └── logger.ts             # pino, request-id child logger
 │   └── public/
-│       └── index.html            # optional single-file dashboard, polls /devices
+│       └── index.html            # single-file operator UI served at /, no build step
 ├── simulator/
 │   └── simulate.ts               # N devices, configurable interval, --stop to kill one
 └── tests/
     ├── unit/
+    │   ├── clock.test.ts
+    │   ├── config.test.ts
     │   ├── device-status.test.ts
+    │   ├── apply-heartbeat.test.ts
     │   └── fleet-service.test.ts
     └── integration/
+        ├── test-app.ts           # buildApp() with a FakeClock and a silent logger
         ├── devices.api.test.ts
         ├── timeout.test.ts
         └── concurrency.test.ts
@@ -133,7 +156,7 @@ device-fleet-monitor/
 
 ## 3. Prerequisites
 
-- **Node.js 20 or later** (`node --version`)
+- **Node.js 20.12 or later** (`node --version`); developed on Node 22
 - **npm 10 or later**
 - Optional: **Docker** 24+ if you prefer to run it containerised
 - No database, no external services, nothing to provision
@@ -170,9 +193,13 @@ npm start
 
 The server listens on **http://localhost:3000** by default and logs a startup line with the active configuration.
 
+Open **http://localhost:3000/** in a browser for the operator UI: fleet summary counts, every device with its derived status, last heartbeat, device-reported time and latest metrics, an ONLINE/OFFLINE filter, and a form to register a device. It refreshes every 2 seconds and uses only the public API.
+
 ### Configuration
 
-All settings come from environment variables, with working defaults. Copy `.env.example` to `.env` to override.
+All settings come from environment variables, with working defaults. Copy `.env.example` to `.env` to override; it is loaded automatically at startup if present.
+
+An invalid value (for example `HEARTBEAT_TIMEOUT_MS=abc`, `0` or `-5`) makes the server **refuse to start** with a message naming the variable, rather than silently falling back to a default. A monitor running with a timeout nobody chose is worse than one that does not start.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -189,6 +216,8 @@ Setting `HEARTBEAT_TIMEOUT_MS=5000` is the quickest way to watch the offline tra
 docker build -t device-fleet-monitor .
 docker run -p 3000:3000 -e HEARTBEAT_TIMEOUT_MS=30000 device-fleet-monitor
 ```
+
+`Ctrl+C` / `SIGTERM` shuts down gracefully: the server stops accepting connections, finishes in-flight requests, and exits (forcibly after 10 seconds if a keep-alive connection holds it open).
 
 ---
 
@@ -217,7 +246,15 @@ npm run simulate -- --stop device-03 --stop-after 20000
 | `--stop-after` | `20000` | Milliseconds before silencing it |
 | `--url` | `http://localhost:3000` | Target server |
 
-The simulator registers devices idempotently (a `409` on restart is treated as "already known"), sends plausible `cpu_usage` and `signal_strength` values, and prints a refreshing table of device → last heartbeat → status. `Ctrl+C` stops it cleanly.
+The simulator registers devices idempotently (a `409` on restart is treated as "already known"), sends plausible `cpu_usage` and `signal_strength` values, and prints a table refreshed every second:
+
+```
+DEVICE        SIM         SENT   LAST SEEN  SERVER
+device-01     running        7      0s ago  ONLINE
+device-03     STOPPED        2     35s ago  OFFLINE
+```
+
+`SIM` is what the simulator is doing; `SERVER` is the status read back from `GET /devices`, so the table shows the server's derived status, not the simulator's opinion. Invalid flags or an unknown `--stop` id fail immediately with a message. `Ctrl+C` stops it cleanly.
 
 ### Verifying the timeout by hand
 
@@ -252,30 +289,47 @@ The entire suite completes in a couple of seconds — no test sleeps on real tim
 - Registered but never heard from → `OFFLINE`
 - Respects a non-default `HEARTBEAT_TIMEOUT_MS`
 
+**Unit — heartbeat rules (`apply-heartbeat.test.ts`)**
+- `lastHeartbeatAt` is server receive time, ignores the device timestamp, and never moves backwards
+- Metrics: an older device timestamp keeps the stored reading but still updates liveness; equal or newer replaces it; a missing timestamp replaces it
+- A delayed reading older than one replaced by an untimed heartbeat is still rejected
+- A delayed reading is accepted after a newer *metric-less* ping, if it is newer than the stored reading
+- A partial heartbeat replaces the whole snapshot; an empty one is a liveness ping that keeps the stored metrics
+- Applying a heartbeat does not mutate its input
+
+**Unit — clock (`clock.test.ts`)**
+- `SystemClock` is unaffected by the wall clock stepping backwards after startup, and never returns a smaller value than its previous reading
+
+**Unit — config (`config.test.ts`)**
+- Defaults when nothing is set; overrides are read
+- `HEARTBEAT_TIMEOUT_MS` of `abc`, `0`, `-5`, `1.5` and an unknown `LOG_LEVEL` are rejected, naming the variable
+
 **Unit — service (`fleet-service.test.ts`)**
 - Registering a device returns it as `OFFLINE` with `last_heartbeat: null`
 - Registering a duplicate id raises `DuplicateDeviceError`
 - A heartbeat from an unregistered id raises `DeviceNotFoundError`
-- An out-of-order heartbeat does not move `lastHeartbeatAt` backwards
-- Summary counts are correct across a mixed fleet and `total === online + offline`
+- Clock skew beyond `CLOCK_SKEW_WARN_MS` logs a warning but the heartbeat is accepted; exactly at the threshold does not warn
+- Status is derived per device at read time; list filtering; summary counts across a mixed and an empty fleet, with `total === online + offline`
 
 **Integration — HTTP (`devices.api.test.ts`)**
-- `POST /devices` → `201` with the created record
-- `POST /devices` duplicate → `409`
-- `POST /devices` missing/invalid `id` → `400` with a field-level message
-- `POST /devices/:id/heartbeat` → `200`, device becomes `ONLINE`
-- Heartbeat for unknown id → `404`
-- Heartbeat with a malformed `timestamp` → `400`
-- `GET /devices/:id` unknown → `404`
-- `GET /devices?status=OFFLINE` filters correctly; invalid value → `400`
+- `POST /devices` → `201` with the created record; duplicate → `409`
+- `POST /devices` with a missing, empty, unsafe or 65-character `id`, a blank `name`, an unknown field, malformed JSON or no body → `400` naming the field
+- `POST /devices/:id/heartbeat` → `200`, device becomes `ONLINE`; an empty body is accepted as a liveness ping
+- Heartbeat for unknown id → `404` with the exact error body
+- Heartbeat with a malformed `timestamp`, lowercase `status`, `cpu_usage` of -1 or 101, `signal_strength` of -151 or 1, a string number, or a misspelt field (`cpu_usge`) → `400`
+- `cpu_usage` 0 and 100, `signal_strength` -150 and 0 are accepted (inclusive bounds); a timestamp with a UTC offset is normalised
+- `GET /devices`, `GET /devices?status=OFFLINE`, invalid filter → `400`; `GET /devices/:id` full detail or `404`
+- `/healthz`, and an unknown route returns the uniform error shape
 
 **Integration — timeout behaviour (`timeout.test.ts`)**
-- Register → heartbeat → `ONLINE`; advance the fake clock past 30 s → the same device reads `OFFLINE` with no further requests
+- Exactly at 30 s → still `ONLINE`; 1 ms later → `OFFLINE` with no further requests
 - A fresh heartbeat after going offline brings it back to `ONLINE`
-- `/summary` tracks the transition
+- `/summary` and `?status=OFFLINE` track the transition
+- Heartbeats arriving every 30 s keep a device `ONLINE` indefinitely
 
 **Integration — concurrency (`concurrency.test.ts`)**
-- 50 parallel heartbeats across the fleet leave every device `ONLINE` with a consistent `lastHeartbeatAt`
+- 50 parallel heartbeats across 5 devices leave every device `ONLINE` with a consistent `lastHeartbeatAt`
+- 10 parallel registrations of the same id produce exactly one `201` and nine `409`
 
 ---
 
@@ -297,10 +351,12 @@ curl -X POST localhost:3000/devices \
   "name": "Lab Device 01",
   "status": "OFFLINE",
   "last_heartbeat": null,
-  "registered_at": "2026-10-10T07:00:00.000Z"
+  "registered_at": "2026-10-10T07:00:00.000Z",
+  "last_reported_timestamp": null,
+  "metrics": null
 }
 ```
-`201 Created`. A repeat of the same id returns `409`.
+`201 Created`. A repeat of the same id returns `409`. `id` must be 1–64 characters of `[A-Za-z0-9._-]`; `name` must be non-blank (max 100). Unknown fields are rejected.
 
 ### Send a heartbeat
 
@@ -316,11 +372,21 @@ curl -X POST localhost:3000/devices/device-01/heartbeat \
   "name": "Lab Device 01",
   "status": "ONLINE",
   "last_heartbeat": "2026-10-10T07:00:05.012Z",
+  "registered_at": "2026-10-10T07:00:00.000Z",
   "last_reported_timestamp": "2026-10-10T07:00:05.000Z",
   "metrics": { "status": "OK", "cpu_usage": 42, "signal_strength": -71 }
 }
 ```
-`200 OK`. All body fields are optional except that, if present, they must be well-formed.
+`200 OK`. Every body field is optional, and an empty body (or none) is a valid liveness ping. When present, fields must be well-formed:
+
+| Field | Rule |
+| --- | --- |
+| `timestamp` | ISO 8601 date-time, `Z` or a UTC offset |
+| `status` | `OK`, `WARN` or `ERROR` (case-sensitive) |
+| `cpu_usage` | number, 0–100 inclusive |
+| `signal_strength` | number, -150–0 dBm inclusive |
+
+Any other field is rejected with `400`, so a typo such as `cpu_usge` fails loudly instead of being silently dropped. See §2.5 for when stored metrics are replaced.
 
 ### List devices
 
@@ -380,11 +446,19 @@ Every error shares one shape, so clients never have to branch on the endpoint:
 }
 ```
 
+Validation errors add the offending `field` when there is one:
+
+```json
+{ "error": { "code": "VALIDATION_ERROR", "message": "cpu_usage: Too big: expected number to be <=100", "field": "cpu_usage" } }
+```
+
 | Code | HTTP | When |
 | --- | --- | --- |
-| `VALIDATION_ERROR` | 400 | Body or query failed schema validation (includes the offending field) |
+| `VALIDATION_ERROR` | 400 | Body or query failed schema validation, or the body is not valid JSON |
 | `DEVICE_NOT_FOUND` | 404 | Unknown device id |
+| `NOT_FOUND` | 404 | Unknown route |
 | `DEVICE_ALREADY_EXISTS` | 409 | Re-registering an existing id |
+| `PAYLOAD_TOO_LARGE` | 413 | Request body over 10 kB |
 | `INTERNAL_ERROR` | 500 | Anything unhandled; details go to the log, not the response |
 
 ---
@@ -396,9 +470,13 @@ Every error shares one shape, so clients never have to branch on the endpoint:
 3. **Heartbeats from unregistered devices are rejected with `404`,** not auto-registered. Silently creating devices from telemetry would let a typo'd id inflate the fleet, and fleet membership should be a deliberate act.
 4. **Server receive time is authoritative for liveness.** The device-reported `timestamp` is recorded but never used for the status decision (reasoning in §2.4).
 5. **Device ids are opaque strings,** constrained to 1–64 characters of `[A-Za-z0-9._-]` to keep them safe in URLs.
-6. **In-memory storage is acceptable for this exercise.** The spec does not require durability, and persistence is listed as optional. Storage sits behind an interface so this is a swap, not a rewrite.
+6. **In-memory storage is acceptable for this exercise.** The spec does not require durability, and persistence is listed as optional. Storage sits behind an interface, so the service never depends on the map directly.
 7. **No authentication.** Out of scope for the exercise; noted as a limitation rather than silently ignored.
 8. **Single process.** No clustering or multiple replicas.
+9. **The device timestamp may order a device's own readings.** It is never used for liveness, but it decides whether a delayed heartbeat's metrics are newer than the stored ones (§2.5). A heartbeat without a timestamp is treated as the newest reading, because it was just received.
+10. **Device `status` is a fixed set: `OK`, `WARN`, `ERROR`.** A free string would accept any firmware's vocabulary, but then nothing reading the API could rely on the values meaning anything. Adding a state is a deliberate API change.
+11. **Metric ranges:** `cpu_usage` is a percentage (0–100) and `signal_strength` is RSSI in dBm (-150–0). Out-of-range readings are rejected rather than stored, so nonsense never reaches an operator.
+12. **A heartbeat's metrics are one snapshot.** A heartbeat carrying only some metrics replaces all of them (the rest become `null`); one carrying none is a pure liveness ping and leaves stored metrics alone.
 
 ---
 
@@ -409,7 +487,9 @@ Every error shares one shape, so clients never have to branch on the endpoint:
 - **No offline events.** Because status is derived rather than stored, nothing "fires" when a device crosses the 30-second line. Polling sees the change immediately; a webhook or alert consumer would not. A monitoring product needs this.
 - **No heartbeat history.** Only the latest heartbeat is kept, so there is no uptime percentage, no metric trend, no "when did this last flap".
 - **`GET /devices` is unpaginated.** Fine at tens of devices, not at tens of thousands.
-- **Metrics are stored but not validated against ranges** beyond basic types — a `cpu_usage` of 900 is accepted.
+- **A strict schema is brittle across firmware versions.** Unknown fields are rejected, so a device that starts sending a new field breaks until the server learns it.
+- **The UI makes one request per device per refresh** (it reads `/devices/:id` for metrics). Fine for a lab fleet; a larger fleet would want a list endpoint that includes metrics.
+- **The Dockerfile was not verified on the development machine** (no Docker daemon was available); the Node commands above are the verified path.
 - **No authentication, authorization, or rate limiting.** Any caller can register devices or spoof heartbeats for an id they do not own.
 - **No TLS**; expected to sit behind a terminating proxy.
 
@@ -419,7 +499,7 @@ Every error shares one shape, so clients never have to branch on the endpoint:
 
 In the order I would actually do it:
 
-1. **Persistence behind the existing repository interface** — SQLite or Postgres. `InMemoryDeviceRepository` already implements `DeviceRepository`, so this is a new implementation plus a wiring change, and the existing service tests run unchanged against both.
+1. **Persistence behind the existing repository interface** — SQLite or Postgres. The service already depends only on `DeviceRepository`, and every write goes through one read-modify-write call (`update(id, change)`) that maps onto a transaction. The interface is synchronous today because an in-memory map needs nothing else; a real database driver is async, so this step also makes the interface return Promises and adds `await` in the service. That is a mechanical change, deliberately deferred until there is a database to justify it.
 2. **Offline transition events.** Add a lightweight checker that compares derived status against a `lastNotifiedStatus` field and emits a transition event, keeping reads derived (correct) while gaining edge-triggered alerts. This is the right place to add a webhook or SSE stream for a live dashboard.
 3. **Heartbeat history and metrics.** Append heartbeats to a time-series table with retention, enabling uptime percentage, CPU trends and flap detection — the questions an operator actually asks.
 4. **Authentication.** A per-device key or HMAC-signed heartbeat so a device id cannot be spoofed, plus an operator token on the read APIs.

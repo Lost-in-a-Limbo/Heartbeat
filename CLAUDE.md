@@ -28,7 +28,7 @@ The full test suite must finish in a few seconds. If a change makes it slower, t
 - **`lastHeartbeatAt` is server receive time.** The device-reported `timestamp` is stored as `lastReportedTimestamp` and never used for a liveness decision.
 - **`lastHeartbeatAt` only moves forward.** Out-of-order heartbeats must not drag it backwards.
 - **No test may sleep on real time.** Advance a `FakeClock` instead.
-- **Do not add dependencies** without flagging it first. Current set: express, zod, pino (+ pino-pretty, tsx, typescript, vitest, supertest in dev).
+- **Do not add dependencies** without flagging it first. Current set: express, zod, pino (+ pino-pretty, tsx, typescript, vitest, @vitest/coverage-v8, supertest, and the `@types/*` packages for node, express and supertest in dev).
 
 ---
 

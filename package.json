@@ -1,0 +1,41 @@
+{
+  "name": "device-fleet-monitor",
+  "version": "1.0.0",
+  "description": "Tracks a fleet of devices via heartbeats and reports whether each is ONLINE or OFFLINE.",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts | pino-pretty",
+    "build": "tsc --noEmit && tsc -p tsconfig.build.json && node -e \"const fs = require('node:fs'); if (fs.existsSync('src/public')) fs.cpSync('src/public', 'dist/public', { recursive: true })\"",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "simulate": "tsx simulator/simulate.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lost-in-a-Limbo/Heartbeat.git"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.3.0",
+    "pino": "^10.4.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.20.5",
+    "@types/supertest": "^7.2.1",
+    "@vitest/coverage-v8": "^5.0.3",
+    "pino-pretty": "^13.2.0",
+    "supertest": "^7.3.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}

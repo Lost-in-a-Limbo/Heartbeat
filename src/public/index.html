@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Device Fleet Monitor</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1c2430; --muted: #66707d; --border: #dde1e6;
+    --online: #1a7f37; --online-bg: #dafbe1; --offline: #b42318; --offline-bg: #fee4e2;
+    --warn: #9a6700; --warn-bg: #fff3c4; --accent: #2557d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1419; --panel: #172029; --text: #e6edf3; --muted: #8b96a3; --border: #2a3541;
+      --online: #4ac26b; --online-bg: #12301c; --offline: #ff7b72; --offline-bg: #3a1716;
+      --warn: #e3b341; --warn-bg: #3a2e0f; --accent: #6e9bff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+  h1 { font-size: 20px; margin: 0; }
+  .muted { color: var(--muted); }
+  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .card .value { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .card.online .value { color: var(--online); }
+  .card.offline .value { color: var(--offline); }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .filters button { border: 1px solid var(--border); background: var(--panel); color: var(--text);
+                    padding: 6px 12px; cursor: pointer; font: inherit; }
+  .filters button:first-child { border-radius: 6px 0 0 6px; }
+  .filters button:last-child { border-radius: 0 6px 6px 0; }
+  .filters button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  form { display: flex; flex-wrap: wrap; gap: 8px; }
+  input { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; }
+  form button { padding: 6px 14px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+  .message { min-height: 20px; margin: 0 0 8px; }
+  .message.error { color: var(--offline); }
+  .message.ok { color: var(--online); }
+  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.ONLINE, .badge.OK { color: var(--online); background: var(--online-bg); }
+  .badge.OFFLINE, .badge.ERROR { color: var(--offline); background: var(--offline-bg); }
+  .badge.WARN { color: var(--warn); background: var(--warn-bg); }
+  .empty { padding: 32px; text-align: center; color: var(--muted); }
+  footer { margin-top: 12px; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Device Fleet Monitor</h1>
+    <span class="muted" id="updated">Connecting…</span>
+  </header>
+
+  <section class="cards" aria-label="Fleet summary">
+    <div class="card"><div class="label">Total</div><div class="value" id="total">–</div></div>
+    <div class="card online"><div class="label">Online</div><div class="value" id="online">–</div></div>
+    <div class="card offline"><div class="label">Offline</div><div class="value" id="offline">–</div></div>
+  </section>
+
+  <div class="toolbar">
+    <div class="filters" role="group" aria-label="Filter by status">
+      <button type="button" data-filter="" aria-pressed="true">All</button>
+      <button type="button" data-filter="ONLINE" aria-pressed="false">Online</button>
+      <button type="button" data-filter="OFFLINE" aria-pressed="false">Offline</button>
+    </div>
+    <form id="register">
+      <input name="id" placeholder="device-06" required pattern="[A-Za-z0-9._\-]{1,64}" aria-label="Device id">
+      <input name="name" placeholder="Name" required aria-label="Device name">
+      <button type="submit">Register</button>
+    </form>
+  </div>
+  <p class="message" id="message" role="status"></p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Device</th><th>Name</th><th>Status</th><th>Last heartbeat</th>
+          <th>Device clock</th><th>Reported</th><th class="num">CPU %</th><th class="num">Signal dBm</th>
+          <th>Registered</th>
+        </tr>
+      </thead>
+      <tbody id="devices"></tbody>
+    </table>
+  </div>
+  <footer class="muted">Status is derived by the server on every read. This page refreshes every 2 seconds.</footer>
+</main>
+
+<script>
+  const POLL_MS = 2000;
+  let filter = "";
+
+  const $ = (id) => document.getElementById(id);
+
+  function cell(content, className) {
+    const td = document.createElement("td");
+    if (className) td.className = className;
+    if (content instanceof Node) td.append(content);
+    else td.textContent = content ?? "–";
+    return td;
+  }
+
+  function badge(text) {
+    if (!text) return "–";
+    const span = document.createElement("span");
+    span.className = "badge " + text;
+    span.textContent = text;
+    return span;
+  }
+
+  function ago(iso) {
+    if (!iso) return "never";
+    const seconds = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+    if (seconds < 60) return seconds + "s ago";
+    if (seconds < 3600) return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s ago";
+    return new Date(iso).toLocaleString();
+  }
+
+  function time(iso) {
+    return iso ? new Date(iso).toLocaleTimeString() : "–";
+  }
+
+  async function getJson(path) {
+    const res = await fetch(path);
+    if (!res.ok) throw new Error(path + " returned HTTP " + res.status);
+    return res.json();
+  }
+
+  function renderRows(devices) {
+    const body = $("devices");
+    body.replaceChildren();
+    if (devices.length === 0) {
+      const td = cell(filter ? "No " + filter.toLowerCase() + " devices." : "No devices registered yet. Start the simulator or register one above.", "empty");
+      td.colSpan = 9;
+      const tr = document.createElement("tr");
+      tr.append(td);
+      body.append(tr);
+      return;
+    }
+    for (const d of devices) {
+      const m = d.metrics || {};
+      const tr = document.createElement("tr");
+      tr.append(
+        cell(d.id),
+        cell(d.name),
+        cell(badge(d.status)),
+        cell(ago(d.last_heartbeat)),
+        cell(time(d.last_reported_timestamp)),
+        cell(badge(m.status)),
+        cell(m.cpu_usage, "num"),
+        cell(m.signal_strength, "num"),
+        cell(time(d.registered_at)),
+      );
+      body.append(tr);
+    }
+  }
+
+  async function refresh() {
+    try {
+      const query = filter ? "?status=" + filter : "";
+      const [summary, list] = await Promise.all([getJson("/summary"), getJson("/devices" + query)]);
+      const details = await Promise.all(
+        list.map((d) => getJson("/devices/" + encodeURIComponent(d.id)).catch(() => d)),
+      );
+      $("total").textContent = summary.total;
+      $("online").textContent = summary.online;
+      $("offline").textContent = summary.offline;
+      renderRows(details);
+      $("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+    } catch (error) {
+      $("updated").textContent = "Cannot reach server: " + error.message;
+    }
+  }
+
+  function showMessage(text, kind) {
+    const el = $("message");
+    el.textContent = text;
+    el.className = "message " + kind;
+  }
+
+  document.querySelectorAll("[data-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      filter = button.dataset.filter;
+      document.querySelectorAll("[data-filter]").forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
+      refresh();
+    });
+  });
+
+  $("register").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const body = { id: form.elements.id.value.trim(), name: form.elements.name.value.trim() };
+    try {
+      const res = await fetch("/devices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showMessage(data.error ? data.error.message : "HTTP " + res.status, "error");
+        return;
+      }
+      showMessage("Registered " + data.id + ". It stays OFFLINE until its first heartbeat.", "ok");
+      form.reset();
+      refresh();
+    } catch (error) {
+      showMessage("Request failed: " + error.message, "error");
+    }
+  });
+
+  refresh();
+  setInterval(refresh, POLL_MS);
+</script>
+</body>
+</html>
