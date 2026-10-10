@@ -119,7 +119,7 @@ In the register form:
 - Register an id that already exists → red message: *A device with id '…' is already registered*.
 - Leave the name blank, or type an id with a space or `/` → the browser refuses to submit.
 
-The server checks everything again on its own, whoever calls it. From a terminal, each of these is rejected with a message naming the problem field:
+The server checks everything again on its own, whoever calls it. From a terminal, each of these is rejected with a message naming the problem field (the full list of error cases, with the exact status code each returns, is in [README §8, "Try the error handling yourself"](README.md#try-the-error-handling-yourself)):
 
 ```bash
 curl -X POST localhost:3000/devices/device-01/heartbeat -H 'Content-Type: application/json' -d '{"cpu_usage":101}'

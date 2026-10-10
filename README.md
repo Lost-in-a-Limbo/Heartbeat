@@ -512,6 +512,58 @@ Validation errors add the offending `field` when there is one:
 | `PAYLOAD_TOO_LARGE` | 413 | Request body over 10 kB |
 | `INTERNAL_ERROR` | 500 | Anything unhandled; details go to the log, not the response |
 
+### Try the error handling yourself
+
+With the server running and `device-01` registered (start the simulator, or run the register example above), each command below returns the status and error code shown. Every response uses the same `{"error":{"code","message"}}` shape, and validation errors name the offending `field`.
+
+```bash
+J='Content-Type: application/json'
+
+# 409 DEVICE_ALREADY_EXISTS: same id registered twice
+curl -i -X POST localhost:3000/devices -H "$J" -d '{"id":"device-01","name":"Again"}'
+
+# 400 VALIDATION_ERROR (field: id): missing id / unsafe characters in id
+curl -i -X POST localhost:3000/devices -H "$J" -d '{"name":"No id"}'
+curl -i -X POST localhost:3000/devices -H "$J" -d '{"id":"bad/id","name":"x"}'
+
+# 400 VALIDATION_ERROR: body is not valid JSON
+curl -i -X POST localhost:3000/devices -H "$J" -d '{"id":'
+
+# 404 DEVICE_NOT_FOUND: heartbeat for, or lookup of, an unregistered device
+curl -i -X POST localhost:3000/devices/ghost/heartbeat
+curl -i localhost:3000/devices/ghost
+
+# 400 VALIDATION_ERROR: out-of-range metrics (fields: cpu_usage, signal_strength)
+curl -i -X POST localhost:3000/devices/device-01/heartbeat -H "$J" -d '{"cpu_usage":101}'
+curl -i -X POST localhost:3000/devices/device-01/heartbeat -H "$J" -d '{"signal_strength":1}'
+
+# 400 VALIDATION_ERROR: status must be OK, WARN or ERROR (case-sensitive)
+curl -i -X POST localhost:3000/devices/device-01/heartbeat -H "$J" -d '{"status":"ok"}'
+
+# 400 VALIDATION_ERROR (field: cpu_usge): misspelt field is rejected, not ignored
+curl -i -X POST localhost:3000/devices/device-01/heartbeat -H "$J" -d '{"cpu_usge":5}'
+
+# 400 VALIDATION_ERROR (field: timestamp): not an ISO 8601 date-time
+curl -i -X POST localhost:3000/devices/device-01/heartbeat -H "$J" -d '{"timestamp":"yesterday"}'
+
+# 400 VALIDATION_ERROR (field: status): unknown status filter
+curl -i 'localhost:3000/devices?status=SLEEPING'
+
+# 404 NOT_FOUND: unknown route
+curl -i localhost:3000/nope
+
+# 413 PAYLOAD_TOO_LARGE: body over 10 kB
+curl -i -X POST localhost:3000/devices -H "$J" -d "{\"id\":\"a\",\"name\":\"$(printf 'x%.0s' $(seq 1 20000))\"}"
+```
+
+Example response:
+
+```json
+{ "error": { "code": "VALIDATION_ERROR", "message": "cpu_usage: Too big: expected number to be <=100", "field": "cpu_usage" } }
+```
+
+Two failure modes are checked at startup rather than per request: an invalid environment variable (`HEARTBEAT_TIMEOUT_MS=abc npm run dev`) and a corrupt `DATA_FILE` both make the server exit with a message naming the problem (§5). Every case above is also covered by the automated tests (§7).
+
 ---
 
 ## 9. Assumptions
