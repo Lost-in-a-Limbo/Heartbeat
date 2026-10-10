@@ -1,6 +1,8 @@
 # Device Fleet Monitor
 
 A small HTTP service that tracks a fleet of devices via heartbeats and reports whether each device is `ONLINE` or `OFFLINE`, plus a simulator that drives a fleet of devices against it.
+
+> **Want to try it in the browser?** See **[USER_GUIDE.md](USER_GUIDE.md)** for a step-by-step walkthrough of the dashboard, mapped to every requirement of the problem statement.
 ---
 
 ## 1. What this project does
@@ -104,6 +106,7 @@ The repository interface is synchronous on purpose. An async interface would onl
 ```
 device-fleet-monitor/
 ├── README.md
+├── USER_GUIDE.md                 # how to use the dashboard, mapped to the requirements
 ├── CLAUDE.md                     # working notes / conventions for AI-assisted edits
 ├── package.json
 ├── tsconfig.json                 # typechecks src, tests and simulator
@@ -122,12 +125,14 @@ device-fleet-monitor/
 │   │   └── errors.ts             # DeviceNotFoundError, DuplicateDeviceError, ValidationError
 │   ├── repository/
 │   │   ├── device-repository.ts  # interface
-│   │   └── in-memory-device-repository.ts
+│   │   ├── in-memory-device-repository.ts
+│   │   └── file-device-repository.ts   # opt-in JSON snapshot (DATA_FILE)
 │   ├── services/
 │   │   └── fleet-service.ts      # register, recordHeartbeat, list, get, summary
 │   ├── http/
 │   │   ├── routes.ts
 │   │   ├── schemas.ts            # zod request schemas
+│   │   ├── openapi.ts            # OpenAPI 3.1 document generated from the zod schemas
 │   │   └── error-handler.ts      # domain error -> HTTP status, uniform error body
 │   ├── lib/
 │   │   ├── clock.ts              # Clock, SystemClock, FakeClock
@@ -142,12 +147,16 @@ device-fleet-monitor/
     │   ├── config.test.ts
     │   ├── device-status.test.ts
     │   ├── apply-heartbeat.test.ts
+    │   ├── device-repository.test.ts       # one contract, run against both repositories
+    │   ├── file-device-repository.test.ts
+    │   ├── temp-path.ts                    # temp dirs, cleaned up after each test
     │   └── fleet-service.test.ts
     └── integration/
         ├── test-app.ts           # buildApp() with a FakeClock and a silent logger
         ├── devices.api.test.ts
         ├── timeout.test.ts
-        └── concurrency.test.ts
+        ├── concurrency.test.ts
+        └── openapi.contract.test.ts       # real responses checked against the documented shapes
 ```
 
 `app.ts` builds the Express app but does not listen, so integration tests can mount it with a `FakeClock` and drive real HTTP requests through supertest without opening a port or waiting on wall-clock time.
@@ -207,8 +216,21 @@ An invalid value (for example `HEARTBEAT_TIMEOUT_MS=abc`, `0` or `-5`) makes the
 | `HEARTBEAT_TIMEOUT_MS` | `30000` | Window within which a heartbeat keeps a device `ONLINE` |
 | `CLOCK_SKEW_WARN_MS` | `60000` | Log a warning if device-reported time drifts beyond this |
 | `LOG_LEVEL` | `info` | pino level: `trace`…`error` |
+| `DATA_FILE` | unset | Path to a JSON file that persists the fleet across restarts. Unset means in-memory only |
 
 Setting `HEARTBEAT_TIMEOUT_MS=5000` is the quickest way to watch the offline transition during a demo.
+
+### Persistence (optional)
+
+```bash
+DATA_FILE=./data/fleet.json npm run dev
+```
+
+With `DATA_FILE` set, every registration and heartbeat is written to that file before the response is sent, and the fleet is loaded from it at startup (`data/` is git-ignored). Status is still derived, never stored: a device that was `ONLINE` before a restart reads `OFFLINE` afterwards if its last heartbeat is now older than the timeout.
+
+Each write goes to a temporary file that is then renamed over the real one, so a crash mid-write leaves the previous snapshot intact instead of a half-written file. The snapshot is written *before* memory is updated, so a failed write (disk full, permissions) returns `500` and leaves memory and disk agreeing. A file that exists but is not a valid snapshot makes the server refuse to start, rather than start empty and overwrite the operator's data on the next write.
+
+Persistence is opt-in so that tests, demos and the commands in this README keep their clean, empty starting state.
 
 ### Docker
 
@@ -302,7 +324,7 @@ The entire suite completes in a couple of seconds — no test sleeps on real tim
 
 **Unit — config (`config.test.ts`)**
 - Defaults when nothing is set; overrides are read
-- `HEARTBEAT_TIMEOUT_MS` of `abc`, `0`, `-5`, `1.5` and an unknown `LOG_LEVEL` are rejected, naming the variable
+- `HEARTBEAT_TIMEOUT_MS` of `abc`, `0`, `-5`, `1.5`, a blank `DATA_FILE` and an unknown `LOG_LEVEL` are rejected, naming the variable
 
 **Unit — service (`fleet-service.test.ts`)**
 - Registering a device returns it as `OFFLINE` with `last_heartbeat: null`
@@ -310,6 +332,12 @@ The entire suite completes in a couple of seconds — no test sleeps on real tim
 - A heartbeat from an unregistered id raises `DeviceNotFoundError`
 - Clock skew beyond `CLOCK_SKEW_WARN_MS` logs a warning but the heartbeat is accepted; exactly at the threshold does not warn
 - Status is derived per device at read time; list filtering; summary counts across a mixed and an empty fleet, with `total === online + offline`
+
+**Unit — repositories (`device-repository.test.ts`, `file-device-repository.test.ts`)**
+- One contract (insert, get, list, update, duplicate, unknown id) runs against **both** the in-memory and the file repository
+- The file store survives a restart with every field intact, creates missing directories, leaves no temp file behind, and does not write on a rejected duplicate
+- A failed write leaves memory unchanged, so memory never runs ahead of disk
+- A file that is not JSON, has the wrong shape, an unknown version or an invalid status refuses to load, naming `DATA_FILE`
 
 **Integration — HTTP (`devices.api.test.ts`)**
 - `POST /devices` → `201` with the created record; duplicate → `409`
@@ -330,6 +358,11 @@ The entire suite completes in a couple of seconds — no test sleeps on real tim
 **Integration — concurrency (`concurrency.test.ts`)**
 - 50 parallel heartbeats across 5 devices leave every device `ONLINE` with a consistent `lastHeartbeatAt`
 - 10 parallel registrations of the same id produce exactly one `201` and nine `409`
+
+**Integration — API contract (`openapi.contract.test.ts`)**
+- `/openapi.json` is OpenAPI 3.1 and documents every route
+- The documented request rules match the enforced ones (ranges, status set, no unknown fields, required fields)
+- Real responses for every endpoint, and for each of the 400 / 404 / 409 / 413 errors, match the documented shapes
 
 ---
 
@@ -423,6 +456,14 @@ curl localhost:3000/summary
 { "total": 5, "online": 4, "offline": 1 }
 ```
 
+### API documentation (OpenAPI)
+
+```bash
+curl localhost:3000/openapi.json
+```
+
+An OpenAPI 3.1 document generated at startup from the **same zod schemas that validate requests**, so the documented rules (ranges, the `OK`/`WARN`/`ERROR` set, rejected unknown fields) cannot drift from the enforced ones. Response shapes are documented with zod schemas too, and `openapi.contract.test.ts` checks every real response, including each error code, against them. Paste the URL into any OpenAPI viewer (e.g. Swagger Editor) to browse it.
+
 ### Health check
 
 ```bash
@@ -470,19 +511,22 @@ Validation errors add the offending `field` when there is one:
 3. **Heartbeats from unregistered devices are rejected with `404`,** not auto-registered. Silently creating devices from telemetry would let a typo'd id inflate the fleet, and fleet membership should be a deliberate act.
 4. **Server receive time is authoritative for liveness.** The device-reported `timestamp` is recorded but never used for the status decision (reasoning in §2.4).
 5. **Device ids are opaque strings,** constrained to 1–64 characters of `[A-Za-z0-9._-]` to keep them safe in URLs.
-6. **In-memory storage is acceptable for this exercise.** The spec does not require durability, and persistence is listed as optional. Storage sits behind an interface, so the service never depends on the map directly.
+6. **In-memory storage is the default; persistence is opt-in.** The spec does not require durability, and persistence is listed as optional. A JSON snapshot (`DATA_FILE`) is provided because it needs no dependency and is enough for a fleet of tens of devices. Both stores implement the same `DeviceRepository` interface and pass the same contract tests.
 7. **No authentication.** Out of scope for the exercise; noted as a limitation rather than silently ignored.
 8. **Single process.** No clustering or multiple replicas.
 9. **The device timestamp may order a device's own readings.** It is never used for liveness, but it decides whether a delayed heartbeat's metrics are newer than the stored ones (§2.5). A heartbeat without a timestamp is treated as the newest reading, because it was just received.
 10. **Device `status` is a fixed set: `OK`, `WARN`, `ERROR`.** A free string would accept any firmware's vocabulary, but then nothing reading the API could rely on the values meaning anything. Adding a state is a deliberate API change.
 11. **Metric ranges:** `cpu_usage` is a percentage (0–100) and `signal_strength` is RSSI in dBm (-150–0). Out-of-range readings are rejected rather than stored, so nonsense never reaches an operator.
 12. **A heartbeat's metrics are one snapshot.** A heartbeat carrying only some metrics replaces all of them (the rest become `null`); one carrying none is a pure liveness ping and leaves stored metrics alone.
+13. **Simulated readings are generated, not measured.** Simulated devices have no real hardware, so the simulator generates random CPU, signal and status values. The server stores whatever a device reports and only derives ONLINE/OFFLINE; it never invents readings.
 
 ---
 
 ## 10. Known limitations
 
-- **Data is lost on restart.** Everything lives in a process-local map.
+- **Data is lost on restart unless `DATA_FILE` is set.**
+- **The JSON snapshot rewrites the whole file on every change.** Fine for tens of devices sending a heartbeat every few seconds; at thousands it becomes the bottleneck, which is the point to move to a database (§11). It is also not `fsync`ed, so a power cut (not a process crash) can lose the most recent write.
+- **Only one process may use a data file.** Two servers pointed at the same file would overwrite each other's writes.
 - **Does not scale horizontally.** Two instances behind a load balancer would each see a different fleet, because the map is not shared.
 - **No offline events.** Because status is derived rather than stored, nothing "fires" when a device crosses the 30-second line. Polling sees the change immediately; a webhook or alert consumer would not. A monitoring product needs this.
 - **No heartbeat history.** Only the latest heartbeat is kept, so there is no uptime percentage, no metric trend, no "when did this last flap".
@@ -499,12 +543,12 @@ Validation errors add the offending `field` when there is one:
 
 In the order I would actually do it:
 
-1. **Persistence behind the existing repository interface** — SQLite or Postgres. The service already depends only on `DeviceRepository`, and every write goes through one read-modify-write call (`update(id, change)`) that maps onto a transaction. The interface is synchronous today because an in-memory map needs nothing else; a real database driver is async, so this step also makes the interface return Promises and adds `await` in the service. That is a mechanical change, deliberately deferred until there is a database to justify it.
+1. **A real database behind the existing repository interface** — SQLite or Postgres, replacing the JSON snapshot. The service already depends only on `DeviceRepository`, the contract tests in `device-repository.test.ts` would run against the new store unchanged, and every write goes through one read-modify-write call (`update(id, change)`) that maps onto a transaction. The interface is synchronous today because an in-memory map needs nothing else; a real database driver is async, so this step also makes the interface return Promises and adds `await` in the service. That is a mechanical change, deliberately deferred until there is a database to justify it.
 2. **Offline transition events.** Add a lightweight checker that compares derived status against a `lastNotifiedStatus` field and emits a transition event, keeping reads derived (correct) while gaining edge-triggered alerts. This is the right place to add a webhook or SSE stream for a live dashboard.
 3. **Heartbeat history and metrics.** Append heartbeats to a time-series table with retention, enabling uptime percentage, CPU trends and flap detection — the questions an operator actually asks.
 4. **Authentication.** A per-device key or HMAC-signed heartbeat so a device id cannot be spoofed, plus an operator token on the read APIs.
 5. **A `/metrics` endpoint in Prometheus format** (fleet size, online count, heartbeats/sec, request latency) so the monitor is itself monitorable.
-6. **OpenAPI spec generated from the existing zod schemas,** with contract tests asserting the implementation matches it.
+6. **An interactive API explorer** (Swagger UI or similar) on top of the existing `/openapi.json`. Left out because it needs a dependency or a CDN script.
 7. **Pagination, cursor-based, on `GET /devices`,** plus filtering by name and last-seen window.
 8. **CI pipeline** running typecheck, lint, tests and a Docker build on every push.
 9. **A load test** (k6) at a few thousand heartbeats per second, to find where the single-process design stops being adequate and quantify the point at which step 1 and 2 become mandatory.
