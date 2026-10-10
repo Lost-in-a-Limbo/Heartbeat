@@ -236,8 +236,18 @@ Persistence is opt-in so that tests, demos and the commands in this README keep 
 
 ```bash
 docker build -t device-fleet-monitor .
-docker run -p 3000:3000 -e HEARTBEAT_TIMEOUT_MS=30000 device-fleet-monitor
+docker run --rm -p 3000:3000 device-fleet-monitor
 ```
+
+Environment variables work the same way (`-e HEARTBEAT_TIMEOUT_MS=5000`). To keep the fleet across containers, give it a volume and a data file:
+
+```bash
+docker run --rm -p 3000:3000 -e DATA_FILE=/app/data/fleet.json -v fleet-data:/app/data device-fleet-monitor
+```
+
+The image is a two-stage build: TypeScript is compiled in the first stage, and the final image holds only `dist/` and production dependencies, with no sources, tests or dev tools. It runs as the unprivileged `node` user, which can write only to `/app/data`. `docker stop` sends `SIGTERM`, which triggers the graceful shutdown below and exits with code 0.
+
+The simulator works against the container unchanged: `npm run simulate` on the host, since port 3000 is published.
 
 `Ctrl+C` / `SIGTERM` shuts down gracefully: the server stops accepting connections, finishes in-flight requests, and exits (forcibly after 10 seconds if a keep-alive connection holds it open).
 
@@ -533,7 +543,6 @@ Validation errors add the offending `field` when there is one:
 - **`GET /devices` is unpaginated.** Fine at tens of devices, not at tens of thousands.
 - **A strict schema is brittle across firmware versions.** Unknown fields are rejected, so a device that starts sending a new field breaks until the server learns it.
 - **The UI makes one request per device per refresh** (it reads `/devices/:id` for metrics). Fine for a lab fleet; a larger fleet would want a list endpoint that includes metrics.
-- **The Dockerfile was not verified on the development machine** (no Docker daemon was available); the Node commands above are the verified path.
 - **No authentication, authorization, or rate limiting.** Any caller can register devices or spoof heartbeats for an id they do not own.
 - **No TLS**; expected to sit behind a terminating proxy.
 
@@ -557,29 +566,35 @@ In the order I would actually do it:
 
 ## 12. AI Usage
 
-> Edit this section to match exactly what you did before submitting — it should be your account, not a template.
-
 **Tools used**
 - **Claude (chat)** — design reasoning before any code existed: derive status vs sweep it, how to make a 30-second rule testable without a 30-second test, which edge cases were worth pinning.
-- **Claude Code** — implementation of the parts where the decision was already made: Express wiring, config parsing, zod schemas, Dockerfile, simulator CLI, first pass of the test suite.
+- **Claude Code** — implementation, working from this README's design and the rules in `CLAUDE.md`: domain logic, Express wiring, config parsing, zod schemas, the simulator, the dashboard, persistence, the OpenAPI document, the Dockerfile, the test suite and most of this README's later sections.
+- **ChatGPT** — understanding basic definitions and simplifying terms while I worked through the problem.
 
 **What I used them for**
 - High-volume, low-judgement code — boilerplate, argument parsing, container setup. This is where assistants are strictly faster than me and nothing is at stake.
 - Turning my own list of edge cases into concrete test cases, once I had decided what the edges were.
+- Surfacing decisions rather than making them. I had Claude Code stop and ask me every real design choice as a question with the trade-offs and the alternative I would be rejecting, instead of silently picking a default. That is where the choices recorded in §2.3, §2.5 and §9 came from: the monotonic clock, ordering metrics by device timestamp, range-checked metrics, a fixed `OK`/`WARN`/`ERROR` set, rejecting unknown fields, failing fast on bad config, and opt-in JSON persistence.
 - A first draft of documentation structure, rewritten wherever it did not match my actual reasoning.
 
 **What I deliberately did not delegate**
 - The architecture decisions in §2. Those are the parts of this submission with any judgement in them, and an assistant optimises for the common pattern rather than the correct one.
 - The choice of what to test. I wrote the edge-case list by hand and then asked for the tests, rather than asking for "tests for this file" — tests generated from an implementation assert whatever that implementation does, bugs included.
-- Commit messages, so the history reflects what I was actually thinking at each step.
+- Committing and pushing. Claude Code staged files and proposed how to split the work into commits, with draft messages; I reviewed each change and made every commit and push myself.
 
 **Code I changed or rejected**
 
 The first implementation suggested for the timeout was a `setInterval` sweeper that iterated every device each second and mutated a stored `status` field. I rejected it: a stored status is only correct between sweeps, it creates write contention with the heartbeat path for no gain, and it adds a background lifecycle to manage and shut down. I replaced it with a pure `deriveStatus(lastHeartbeatAt, now, timeoutMs)` computed at read time — always correct at the instant of the read, O(1) per device, nothing to tear down.
 
-Relatedly, the generated timeout test used `await new Promise(r => setTimeout(r, 31000))`, which made the suite take over 30 seconds and still be timing-dependent. I introduced a `Clock` interface with a `FakeClock` for tests, so the same behaviour is verified by advancing a counter — the suite now runs in about a second and tests the boundary at exact millisecond precision.
+Relatedly, the generated timeout test used `await new Promise(r => setTimeout(r, 31000))`, which made the suite take over 30 seconds and still be timing-dependent. I introduced a `Clock` interface with a `FakeClock` for tests, so the same behaviour is verified by advancing a counter — the suite now runs in under a second and tests the boundary at exact millisecond precision.
 
 A third suggestion I corrected rather than rejected: the initial heartbeat handler computed liveness from the device-reported `timestamp` in the request body. That is a real defect — a device with a drifting clock would read as permanently offline or permanently online. I separated the two timestamps as described in §2.4.
+
+The first version of the dashboard came out looking like a generic dark admin template: big stat cards, pill buttons, a boxed table. I rejected it and specified the design myself — a light, calm page with one accent colour, the summary as a single line of text, plain text filter tabs, monospace numbers so columns do not jitter on refresh — while keeping every API call and behaviour unchanged.
+
+For the repository interface, Claude Code laid out both a Promise-based and a synchronous version. I chose synchronous: an async interface would only pay off for a database this exercise does not need, and keeping the code simple mattered more. The cost of that choice is written down in §11 rather than hidden.
+
+When I asked myself how I would answer "are these readings hardcoded?", I added assumption 13 in §9: simulated readings are generated by the simulator, and the server only stores what a device sends.
 
 **How I kept the generated code consistent**
 - A `CLAUDE.md` at the repo root states the working agreement — layer boundaries, "never call `Date.now()` directly, take a `Clock`", the uniform error-code shape, no comments that restate the line below them. Without it, suggestions drift away from the architecture a few files in.
@@ -587,9 +602,10 @@ A third suggestion I corrected rather than rejected: the initial heartbeat handl
 - Anything I could not explain out loud did not get committed. That rule cut two or three plausible-looking suggestions that I did not fully understand.
 
 **What I verified myself**
-- I ran the simulator, stopped `device-03` mid-run, and watched with `curl` as it flipped to `OFFLINE` after the timeout and back to `ONLINE` when heartbeats resumed — confirming the derived-status logic behaves correctly against a real clock and not only against the fake one in tests.
-- I cloned the repository into a clean directory and followed this README end to end to confirm the documented commands actually work from scratch.
-- I hand-checked the boundary case (exactly 30,000 ms) against the test, because an off-by-one on an inclusive-vs-exclusive comparison is exactly the kind of thing that passes review and fails in production.
+- I ran the simulator and the dashboard, watched `device-03` turn `OFFLINE` after the timeout once it was stopped, and back to `ONLINE` when heartbeats resumed — confirming the derived-status logic behaves correctly against a real clock and not only against the fake one in tests.
+- I sent heartbeats with values I chose myself using `curl`, and saw exactly those values appear in the dashboard, so the readings shown are what devices report and nothing is hardcoded.
+- I ran `npm test` myself and saw the whole suite pass.
+- I hand-checked the boundary cases (29,999 / 30,000 / 30,001 ms) in the `deriveStatus` tests against the rule, because an off-by-one on an inclusive-vs-exclusive comparison is exactly the kind of thing that passes review and fails in production.
 
 ---
 
